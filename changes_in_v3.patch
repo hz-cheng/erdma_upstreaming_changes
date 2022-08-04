@@ -1,0 +1,127 @@
+diff --git a/libibverbs/verbs.h b/libibverbs/verbs.h
+index cbf6a857..1bd9a291 100644
+--- a/libibverbs/verbs.h
++++ b/libibverbs/verbs.h
+@@ -2211,6 +2211,7 @@ struct verbs_devices_ops;
+ extern const struct verbs_device_ops verbs_provider_bnxt_re;
+ extern const struct verbs_device_ops verbs_provider_cxgb4;
+ extern const struct verbs_device_ops verbs_provider_efa;
++extern const struct verbs_device_ops verbs_provider_erdma;
+ extern const struct verbs_device_ops verbs_provider_hfi1verbs;
+ extern const struct verbs_device_ops verbs_provider_hns;
+ extern const struct verbs_device_ops verbs_provider_ipathverbs;
+@@ -2224,7 +2225,6 @@ extern const struct verbs_device_ops verbs_provider_rxe;
+ extern const struct verbs_device_ops verbs_provider_siw;
+ extern const struct verbs_device_ops verbs_provider_vmw_pvrdma;
+ extern const struct verbs_device_ops verbs_provider_all;
+-extern const struct verbs_device_ops verbs_provider_erdma;
+ extern const struct verbs_device_ops verbs_provider_none;
+ void ibv_static_providers(void *unused, ...);
+
+diff --git a/providers/erdma/erdma_verbs.c b/providers/erdma/erdma_verbs.c
+index 6930e388..845f0a9e 100644
+--- a/providers/erdma/erdma_verbs.c
++++ b/providers/erdma/erdma_verbs.c
+@@ -279,11 +279,10 @@ static void __erdma_alloc_dbs(struct erdma_qp *qp, struct erdma_context *ctx)
+
+ struct ibv_qp *erdma_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
+ {
+-	struct ibv_context *base_ctx = pd->context;
+-	struct erdma_context *ctx = to_ectx(base_ctx);
++	struct erdma_context *ctx = to_ectx(pd->context);
+ 	struct erdma_cmd_create_qp_resp resp = {};
+ 	struct erdma_cmd_create_qp cmd = {};
+-	uint32_t tbl_idx, tbl_off, nsqebb;
++	uint32_t tbl_idx, tbl_off, nwqebb;
+ 	uint64_t *db_records = NULL;
+ 	struct erdma_qp *qp;
+ 	size_t queue_size;
+@@ -293,11 +292,10 @@ struct ibv_qp *erdma_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
+ 	if (!qp)
+ 		return NULL;
+
+-	nsqebb = roundup_pow_of_two(attr->cap.max_send_wr * MAX_WQEBB_PER_SQE);
+-	queue_size = align(nsqebb << SQEBB_SHIFT, ctx->page_size);
+-	queue_size +=
+-		align(roundup_pow_of_two(attr->cap.max_recv_wr) << RQE_SHIFT,
+-		      ctx->page_size);
++	nwqebb = roundup_pow_of_two(attr->cap.max_send_wr * MAX_WQEBB_PER_SQE);
++	queue_size = align(nwqebb << SQEBB_SHIFT, ctx->page_size);
++	nwqebb = roundup_pow_of_two(attr->cap.max_recv_wr);
++	queue_size += align(nwqebb << RQE_SHIFT, ctx->page_size);
+ 	rv = posix_memalign(&qp->qbuf, ctx->page_size, queue_size);
+ 	if (rv) {
+ 		errno = rv;
+@@ -441,6 +439,12 @@ int erdma_destroy_qp(struct ibv_qp *base_qp)
+ 	pthread_spin_destroy(&qp->rq_lock);
+ 	pthread_spin_destroy(&qp->sq_lock);
+
++	if (qp->sq.wr_tbl)
++		free(qp->sq.wr_tbl);
++
++	if (qp->rq.wr_tbl)
++		free(qp->rq.wr_tbl);
++
+ 	if (qp->db_records)
+ 		erdma_dealloc_dbrecords(ctx, qp->db_records);
+
+@@ -754,27 +758,19 @@ static void *get_next_valid_cqe(struct erdma_cq *cq)
+ 	return owner ^ !!(cq->ci & cq->depth) ? cqe : NULL;
+ }
+
+-static const struct {
+-	enum erdma_opcode erdma;
+-	enum ibv_wc_opcode base;
+-} map_cqe_opcode[ERDMA_NUM_OPCODES] = {
+-	{ ERDMA_OP_WRITE, IBV_WC_RDMA_WRITE },
+-	{ ERDMA_OP_READ, IBV_WC_RDMA_READ },
+-	{ ERDMA_OP_SEND, IBV_WC_SEND },
+-	{ ERDMA_OP_SEND_WITH_IMM, IBV_WC_SEND },
+-	{ ERDMA_OP_RECEIVE, IBV_WC_RECV },
+-	{ ERDMA_OP_RECV_IMM, IBV_WC_RECV_RDMA_WITH_IMM },
+-	{ ERDMA_OP_RECV_INV, IBV_WC_LOCAL_INV }, /* can not appear */
+-	{ ERDMA_OP_REQ_ERR, IBV_WC_RECV }, /* can not appear */
+-	{ ERDNA_OP_READ_RESPONSE, IBV_WC_RECV }, /* can not appear */
+-	{ ERDMA_OP_WRITE_WITH_IMM, IBV_WC_RDMA_WRITE },
+-	{ ERDMA_OP_RECV_ERR, IBV_WC_RECV_RDMA_WITH_IMM }, /* can not appear */
+-	{ ERDMA_OP_INVALIDATE, IBV_WC_LOCAL_INV },
+-	{ ERDMA_OP_RSP_SEND_IMM, IBV_WC_RECV },
+-	{ ERDMA_OP_SEND_WITH_INV, IBV_WC_SEND },
+-	{ ERDMA_OP_REG_MR, IBV_WC_RECV }, /* can not appear */
+-	{ ERDMA_OP_LOCAL_INV, IBV_WC_LOCAL_INV },
+-	{ ERDMA_OP_READ_WITH_INV, IBV_WC_RDMA_READ },
++static const enum ibv_wc_opcode wc_mapping_table[ERDMA_NUM_OPCODES] = {
++	[ERDMA_OP_WRITE] = IBV_WC_RDMA_WRITE,
++	[ERDMA_OP_READ] = IBV_WC_RDMA_READ,
++	[ERDMA_OP_SEND] = IBV_WC_SEND,
++	[ERDMA_OP_SEND_WITH_IMM] = IBV_WC_SEND,
++	[ERDMA_OP_RECEIVE] = IBV_WC_RECV,
++	[ERDMA_OP_RECV_IMM] = IBV_WC_RECV_RDMA_WITH_IMM,
++	[ERDMA_OP_RECV_INV] = IBV_WC_RECV,
++	[ERDMA_OP_WRITE_WITH_IMM] = IBV_WC_RDMA_WRITE,
++	[ERDMA_OP_INVALIDATE] = IBV_WC_LOCAL_INV,
++	[ERDMA_OP_RSP_SEND_IMM] = IBV_WC_RECV,
++	[ERDMA_OP_SEND_WITH_INV] = IBV_WC_SEND,
++	[ERDMA_OP_READ_WITH_INV] = IBV_WC_RDMA_READ,
+ };
+
+ static const struct {
+@@ -876,16 +872,10 @@ static int __erdma_poll_one_cqe(struct erdma_context *ctx, struct erdma_cq *cq,
+ 	wc->byte_len = be32toh(cqe->size);
+ 	wc->wc_flags = 0;
+
+-	if (opcode == ERDMA_OP_RECV_IMM) {
+-		wc->opcode = IBV_WC_RECV_RDMA_WITH_IMM;
++	wc->opcode = wc_mapping_table[opcode];
++	if (opcode == ERDMA_OP_RECV_IMM || opcode == ERDMA_OP_RSP_SEND_IMM) {
+ 		wc->imm_data = htobe32(le32toh(cqe->imm_data));
+ 		wc->wc_flags |= IBV_WC_WITH_IMM;
+-	} else if (opcode == ERDMA_OP_RSP_SEND_IMM) {
+-		wc->opcode = IBV_WC_RECV;
+-		wc->imm_data = htobe32(le32toh(cqe->imm_data));
+-		wc->wc_flags |= IBV_WC_WITH_IMM;
+-	} else {
+-		wc->opcode = map_cqe_opcode[opcode].base;
+ 	}
+
+ 	if (syndrome >= ERDMA_NUM_WC_STATUS)
