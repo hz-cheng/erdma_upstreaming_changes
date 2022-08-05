@@ -1,0 +1,55 @@
+diff --git a/debian/control b/debian/control
+index 7485ad35..d328ecc3 100644
+--- a/debian/control
++++ b/debian/control
+@@ -93,6 +93,7 @@ Description: User space provider drivers for libibverbs
+   - bnxt_re: Broadcom NetXtreme-E RoCE HCAs
+   - cxgb4: Chelsio T4 iWARP HCAs
+   - efa: Amazon Elastic Fabric Adapter
++  - erdma: Alibaba Elastic RDMA (iWarp) Adapter
+   - hfi1verbs: Intel Omni-Path HFI
+   - hns: HiSilicon Hip06 SoC
+   - ipathverbs: QLogic InfiniPath HCAs
+diff --git a/debian/copyright b/debian/copyright
+index 2bdc0dff..066177dc 100644
+--- a/debian/copyright
++++ b/debian/copyright
+@@ -156,6 +156,10 @@ Files: providers/efa/*
+ Copyright: 2019 Amazon.com, Inc. or its affiliates.
+ License: BSD-2-clause or GPL-2
+
++Files: providers/erdma/*
++Copyright: 2020-2021, Alibaba Group
++License: BSD-MIT or GPL-2
++
+ Files: providers/hfi1verbs/*
+ Copyright: 2005 PathScale, Inc.
+            2006-2009 QLogic Corporation
+diff --git a/libibverbs/verbs.h b/libibverbs/verbs.h
+index 1bd9a291..1ffd8af8 100644
+--- a/libibverbs/verbs.h
++++ b/libibverbs/verbs.h
+@@ -2193,7 +2193,7 @@ struct ibv_device **ibv_get_device_list(int *num_devices);
+  */
+ #ifdef RDMA_STATIC_PROVIDERS
+ #define _RDMA_STATIC_PREFIX_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11,     \
+-			     _12, _13, _14, _15, _16, _17, ...)                \
++			     _12, _13, _14, _15, _16, _17, _18, ...)                \
+ 	&verbs_provider_##_1, &verbs_provider_##_2, &verbs_provider_##_3,      \
+ 		&verbs_provider_##_4, &verbs_provider_##_5,                    \
+ 		&verbs_provider_##_6, &verbs_provider_##_7,                    \
+@@ -2201,11 +2201,12 @@ struct ibv_device **ibv_get_device_list(int *num_devices);
+ 		&verbs_provider_##_10, &verbs_provider_##_11,                  \
+ 		&verbs_provider_##_12, &verbs_provider_##_13,                  \
+ 		&verbs_provider_##_14, &verbs_provider_##_15,                  \
+-		&verbs_provider_##_16, &verbs_provider_##_17
++		&verbs_provider_##_16, &verbs_provider_##_17,                  \
++		&verbs_provider_##_18,
+ #define _RDMA_STATIC_PREFIX(arg)                                               \
+ 	_RDMA_STATIC_PREFIX_(arg, none, none, none, none, none, none, none,    \
+ 			     none, none, none, none, none, none, none, none,   \
+-			     none)
++			     none, none)
+
+ struct verbs_devices_ops;
+ extern const struct verbs_device_ops verbs_provider_bnxt_re;
